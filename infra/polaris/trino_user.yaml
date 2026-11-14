@@ -1,0 +1,41 @@
+principals:
+  root:
+    type: service
+    roles:
+      - service_admin
+
+  trino_user:
+    type: service
+    roles:
+      - trino_pr
+
+principal_roles:
+  - service_admin
+  - trino_pr
+
+catalogs:
+  - name: lakehouse
+    type: internal
+    storage_type: s3
+
+    default_base_location: s3://lakehouse/
+
+    allowed_locations:
+      - s3://lakehouse/
+
+    # MinIO configuration
+    endpoint: http://minio:9000
+    endpoint_internal: http://minio:9000
+    region: us-east-1
+    path_style_access: true
+    sts_unavailable: false
+
+    roles:
+      trino_writer_cr:
+        assign_to:
+          - trino_pr
+        privileges:
+          catalog:
+            - CATALOG_MANAGE_CONTENT
+            - CATALOG_MANAGE_ACCESS
+            - TABLE_DROP

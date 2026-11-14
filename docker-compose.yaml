@@ -1,0 +1,235 @@
+services:
+  minio1:
+    container_name: minio1
+    hostname: minio1
+    image: loind31/minio:v0
+    cpus: 1
+    mem_limit: 1g
+    volumes:
+      - minio1:/data
+    command: /workspace/minio server http://minio{1...2}/data/{1...2} --console-address ":9001"
+  
+  minio2:
+    container_name: minio2
+    hostname: minio2
+    image: loind31/minio:v0
+    cpus: 1
+    mem_limit: 1g
+    volumes:
+      - minio2:/data
+    command: /workspace/minio server http://minio{1...2}/data/{1...2} --console-address ":9001"
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: nginx
+    hostname: minio
+    volumes:
+      - ./infra/minio/nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    cpus: 1
+    mem_limit: 1g
+    depends_on:
+      - minio1
+      - minio2
+  postgres:
+    image: postgres:16-alpine
+    container_name: postgres
+    hostname: postgres
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: project
+    ports:
+      - "5433:5432"
+    deploy:
+      resources:
+        limits:
+          cpus: 0.5
+          memory: 512M
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d project"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  polaris:
+    image: loind31/polaris:v1
+    container_name: polaris
+    hostname: polaris
+    restart: always
+    environment:
+      - POLARIS_PERSISTENCE_TYPE=relational-jdbc
+      - QUARKUS_DATASOURCE_USERNAME=postgres
+      - QUARKUS_DATASOURCE_PASSWORD=postgres
+      - QUARKUS_DATASOURCE_JDBC_URL=jdbc:postgresql://postgres:5432/project?currentSchema=public
+      - QUARKUS_CONFIG_LOCATIONS=/workspace/config
+      - AWS_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=minioadmin
+      - AWS_SECRET_ACCESS_KEY=minioadmin
+      - DROP_WITH_PURGE_ENABLED=true
+    ports:
+      - 8182:8182
+      - 8181:8181
+    volumes:
+      - ./infra/polaris/entrypoint.sh:/entrypoint.sh
+      - ./infra/polaris/config:/workspace/config
+      - ./infra/polaris/keys:/workspace/keys
+      - ./infra/polaris/trino_user.yaml:/workspace/trino_user.yaml
+    command: ["/bin/bash", "-c", "/entrypoint.sh"]
+    deploy:
+      resources:
+        limits:
+          cpus: 0.5
+          memory: 512M
+
+  trino-coordinator:
+    image: loind31/trino:v0
+    container_name: trino-coordinator
+    hostname: coordinator
+    ports:
+      - 8080:8080
+    volumes:
+      - ./infra/trino/config/coordinator/config.properties:/workspace/trino/etc/config.properties
+      - ./infra/trino/config/coordinator/node.properties:/workspace/trino/etc/node.properties
+      - ./infra/trino/config/common/jvm.config:/workspace/trino/etc/jvm.config
+      - ./infra/trino/config/catalog:/workspace/trino/etc/catalog
+    command: ["launcher", "run"]
+    deploy:
+      resources:
+        limits:
+          cpus: 1.0
+          memory: 1G
+  trino-worker-1:
+    image: loind31/trino:v0
+    container_name: trino-worker-1
+    hostname: worker-1
+    volumes:
+      - ./infra/trino/config/worker/config.properties:/workspace/trino/etc/config.properties
+      - ./infra/trino/config/worker/1/node.properties:/workspace/trino/etc/node.properties
+      - ./infra/trino/config/common/jvm.config:/workspace/trino/etc/jvm.config
+      - ./infra/trino/config/catalog:/workspace/trino/etc/catalog
+    command: ["launcher", "run"]
+    deploy:
+      resources:
+        limits:
+          cpus: 2.0
+          memory: 2G
+  trino-worker-2:
+    image: loind31/trino:v0
+    container_name: trino-worker-2
+    hostname: worker-2
+    volumes:
+      - ./infra/trino/config/worker/config.properties:/workspace/trino/etc/config.properties
+      - ./infra/trino/config/worker/2/node.properties:/workspace/trino/etc/node.properties
+      - ./infra/trino/config/common/jvm.config:/workspace/trino/etc/jvm.config
+      - ./infra/trino/config/catalog:/workspace/trino/etc/catalog
+    command: ["launcher", "run"]
+    deploy:
+      resources:
+        limits:
+          cpus: 2.0
+          memory: 2G
+
+  spark-master:
+    image: loind31/spark:v1
+    container_name: spark-master
+    hostname: spark-master
+    command: >
+      bash -c "$$SPARK_HOME/sbin/start-master.sh &&
+      tail -f $$SPARK_HOME/logs/*"
+    ports:
+      - "7077:7077"
+      - "8079:8080"
+    cpus: 1
+    mem_limit: 2g
+
+  spark-worker-1:
+    image: loind31/spark:v1
+    container_name: spark-worker-1
+    hostname: spark-worker-1
+    command: >
+      bash -c "$$SPARK_HOME/sbin/start-worker.sh
+      spark://spark-master:7077 &&
+      tail -f $$SPARK_HOME/logs/*"
+    depends_on:
+      - spark-master
+    environment:
+      SPARK_WORKER_CORES: 4
+      SPARK_WORKER_MEMORY: 3g
+    cpus: 4
+    mem_limit: 5g
+
+  spark-worker-2:
+    image: loind31/spark:v1
+    container_name: spark-worker-2
+    hostname: spark-worker-2
+    command: >
+      bash -c "$$SPARK_HOME/sbin/start-worker.sh
+      spark://spark-master:7077 &&
+      tail -f $$SPARK_HOME/logs/*"
+    depends_on:
+      - spark-master
+    environment:
+      SPARK_WORKER_CORES: 4
+      SPARK_WORKER_MEMORY: 3g
+    cpus: 4
+    mem_limit: 5g
+  
+  jupyter:
+    image: loind31/jupyter-spark:v1
+    container_name: jupyter
+    hostname: jupyter
+
+    cpus: 2
+    mem_limit: 3g
+
+    ports:
+      - "8888:8888"
+
+    environment:
+      JUPYTER_TOKEN: "spark123"
+
+      PYSPARK_PYTHON: python3
+      PYSPARK_DRIVER_PYTHON: python3
+
+    command:
+      - bash
+      - -lc
+      - |
+        exec jupyter lab \
+          --ip=0.0.0.0 \
+          --port=8888 \
+          --no-browser \
+          --allow-root \
+          --ServerApp.token=spark123 \
+          --ServerApp.root_dir=/workspace/notebooks
+    volumes:
+      - ./notebooks:/workspace/notebooks
+  airflow:
+    image: loind31/airflow:v1
+    container_name: airflow
+    hostname: airflow
+    ports:
+      - 8082:8080
+    cpus: 1
+    mem_limit: 2g
+    env_file:
+      - ./env/airflow.env
+    command: ["/bin/bash", "/workspace/airflow-entrypoint.sh"]
+    volumes:
+      - ./infra/airflow/home:/workspace/airflow
+      - ./src/dags:/workspace/dags
+      - ./src/ingestion:/workspace/ingestion
+      - ./src/transform:/workspace/transform
+      - ./src/serving:/workspace/serving
+      - ./infra/airflow/entrypoint.sh:/workspace/airflow-entrypoint.sh
+
+volumes:
+  pgdata:
+  minio1:
+  minio2:
